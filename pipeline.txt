@@ -1,0 +1,89 @@
+pipeline{
+    agent any
+    tools{
+        jdk 'jdk17'
+        nodejs 'node16'
+    }
+    environment {
+        SCANNER_HOME=tool 'sonar-scanner'
+    }
+    stages {
+        stage('clean workspace'){
+            steps{
+                cleanWs()
+            }
+        }   
+        stage('Checkout form Git'){
+            steps{
+                git branch: 'main', url: 'https://github.com/uvais12khan/DevSecOps-Project.git'
+            }
+        }
+        stage("Sonarqube Analysis "){
+            steps{
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Netflix \
+                    -Dsonar.projectKey=Netflix '''
+                }    
+            }
+        }
+        stage("quality gate"){
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
+                }
+            }
+        }
+        stage('Install Dependencies') {
+            steps {
+                sh "npm install"
+            }
+        }
+        stage('OWASP FS SCAN') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        stage('TRIVY FS SCAN') {
+            steps {
+                sh "trivy fs . > trivyfs.txt"
+            }
+        }
+        stage("Docker Build & Push"){
+            steps{
+                script{
+                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){   
+                       sh "docker build --build-arg TMDB_V3_API_KEY=a4b7e62de0d9121ffa1cebcdbcdaa285 -t netflix ."
+                       sh "docker tag netflix uvais12khan/netflix:latest "
+                       sh "docker push uvais12khan/netflix:latest "
+                    }
+                }
+            }
+        }
+        stage("Scan Docker Image with TRIVY"){
+            steps{
+                sh "trivy image uvais12khan/netflix:latest > trivy.txt" 
+            }
+        }
+        stage('Deploy to container'){
+            steps{
+                sh 'docker run -d --name netflix -p 8081:80 uvais12khan/netflix:latest'
+            }
+        }
+    }
+    post {
+        always {
+            echo 'This will always run'
+        }
+        success {
+            mail to: 'ukfriends33@gmail.com',
+            subject: 'Jenkins Pipeline Status: SUCCESSFUL',
+            body: "Your Jenkins Build pipeline has been completed successfully."
+        }
+        failure {
+            mail to: 'ukfriends33@gmail.com',
+                 subject: "Jenkins Pipeline Status: FAILED",
+                 body: "Your Jenkins Build pipeline has been failed. Please check the logs for more information."
+        }
+    }
+}
